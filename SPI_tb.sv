@@ -1,110 +1,120 @@
-`timescale 1ns/1ps
+`ifndef CLK_FREQUENCY
+	`define CLK_FREQUENCY 80000000 // 80MHz
+`endif
 
-interface SPI_intf;
-    logic clk, rst;
-    logic cpol, cpha;
-  	logic [1:0] mode;
-  	logic [7:0] tx_byte, rx_byte;
-    logic ss;
-    logic sck;
-    logic start;
-    logic mosi;
-    logic miso;
-    logic spi_lead, spi_trail;
-    logic done;
-endinterface
+`ifndef SPI_FREQUENCY
+	`define SPI_FREQUENCY 10000000 // 10MHz
+`endif
+
+`ifndef HALF_CLOCK
+`define HALF_CLOCK (`CLK_FREQUENCY/(2*`SPI_FREQUENCY)) // 4
+`endif
+
+`ifndef DATA_WIDTH
+	`define DATA_WIDTH 8
+`endif
+
+class object;
+  
+  rand bit [`DATA_WIDTH-1:0] data_in; // master sends this to slave
+  rand bit cpol, cpha;
+  
+endclass
 
 module tb;
-
-    SPI_intf intf();
   
-    spi_master DUT (
-        .clk(intf.clk),
-        .rst(intf.rst),
-        .cpol(intf.cpol),
-        .cpha(intf.cpha),
-        .start(intf.start),
-        .tx_byte(intf.tx_byte),
-        .mode(intf.mode),
-        .mosi(intf.mosi),
-        .rx_byte(intf.rx_byte),
-        .miso(intf.miso),
-        .ss(intf.ss),
-        .sck(intf.sck),
-        .spi_lead(intf.spi_lead),
-        .spi_trail(intf.spi_trail),
-        .done(intf.done)
-    );
-	
-    initial begin
-        intf.clk <= 0;
+  spi_intf intf();
+  
+  spi_master DUT (.clk(intf.clk), .rst(intf.rst), .start(intf.start), .cpol(intf.cpol), .cpha(intf.cpha), .data_in(intf.data_in), .data_out(intf.data_out), .sck(intf.sck), .mode(intf.mode), .ss(intf.ss), .mosi(intf.mosi), .miso(intf.miso));
+  
+  object obj;
+  
+  initial begin
+    intf.clk <= 1'b0;
+  end
+  
+  always #6.25 intf.clk <= ~intf.clk;
+  
+  initial begin
+    $dumpfile("dump.vcd");
+    $dumpvars;
+  end
+  
+  task reset();
+    intf.rst <= 1'b1;
+    intf.miso <= 1'b0;
+    intf.data_in <= 0;
+    intf.cpol <= 1'b0;
+    intf.cpha <= 1'b0;
+    intf.start <= 1'b0;
+    repeat(10)@(posedge intf.clk);
+    intf.rst <= 1'b0;
+    $display("System Reseted");
+    $display("----------------");
+  endtask
+  
+  reg [`DATA_WIDTH-1:0] temp;
+  int count;
+
+  
+  task mosi(object obj);
+    $display("---------------");
+    $display("MOSI TRANSFER");
+    count = 0;
+    forever begin
+      if((intf.cpha == 1'b0 && DUT.spi_trail)||(intf.cpha == 1'b1 && DUT.spi_lead)) begin
+        temp[7:0] <= {temp[6:0],intf.mosi};
+        $display("temp: %b", temp);
+        count++;
+      end
+      if(count == 9) begin
+        break;
+      end
+      @(posedge intf.clk);
     end
     
-    always #6.25 intf.clk = ~intf.clk;
-  
-    task reset();
-        intf.rst <= 1'b1;
-        intf.start <= 1'b0;
-        intf.miso <= 1'b0;
-        intf.cpol <= 1'b0;
-        intf.cpha <= 1'b0;
-        repeat(5) @(posedge intf.clk);
-        intf.rst <= 1'b0;
-    endtask
-  
-    task run_clk();
-    
-        @(posedge intf.clk);
-
-        intf.cpol <= $urandom_range(0,1);
-        intf.cpha <= $urandom_range(0,1);
-        intf.tx_byte <= $urandom_range(1,29);
-    
-        @(posedge intf.clk);
-    
-        intf.start <= 1'b1;
-
-
-    endtask
-
-    task run_mosi();
-        wait(intf.done == 1'b1);
-    endtask
-
-  	int count;
-
-    task run_miso();
-      count = 0;
-        forever begin
-            if ((intf.cpha == 0 && intf.spi_lead) || (intf.cpha == 1 && intf.spi_trail)) begin
-              intf.miso <= $urandom_range(0,1);
-              count++;
-            end
-          if(count == 8) begin
-                break;
-          end
-          repeat(2)@(posedge intf.clk);
-        end
-    endtask
-  
-    task run();
-        reset();
-        run_clk();
-        fork
-            run_mosi();
-            run_miso();
-        join
-        intf.start <= 1'b0;
-    endtask
-  
-    initial begin
-      run();
-      $finish();
+    if(temp == obj.data_in) begin
+      $display("SLAVE RECEIVED CORRECT DATA");
     end
-
-    initial begin
-        $dumpfile("dump.vcd");
-        $dumpvars();
+    else begin
+      $display("SLAVE RECEIVED INCORRECT DATA");
     end
-
+    
+    $display("--------------");
+    
+  endtask
+  
+  int count1;
+  
+  task miso(object obj);
+    count1 = 0;
+    forever begin
+      if((intf.cpha == 1'b0 && DUT.spi_lead)||(intf.cpha == 1'b1 && DUT.spi_trail)) begin
+        intf.miso <= $urandom_range(0,1);
+        count1++;
+      end
+      if(count1 == 9) break;
+      @(posedge intf.clk);
+    end
+  endtask
+  
+  initial begin
+    reset();
+    
+    obj = new();
+    assert(obj.randomize()) else $error("RANDOMIZATION FAILED");
+    
+    $display("cpol: %0d, cpha: %0d data_in: %b", obj.cpol, obj.cpha, obj.data_in);
+    intf.start <= 1'b1;
+    intf.cpol <= obj.cpol;
+    intf.cpha <= obj.cpha;
+    intf.data_in <= obj.data_in;
+    
+    fork
+      mosi(obj);
+      miso(obj);
+    join
+    $finish();
+  end
+  
 endmodule
